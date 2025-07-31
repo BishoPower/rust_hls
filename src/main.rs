@@ -8,8 +8,6 @@ fn main() {
     println!("");
     println!("Available examples:");
     println!("  cargo run --example pipelined_mac        # Complete MAC pipeline");
-    println!("  cargo run --example simple_pipeline      # Basic pipeline example");
-    println!("  cargo run --example complete_pipeline_demo # Multiple pipeline configs");
     println!("");
     println!("Generated Verilog will be in target/verilog_out/");
     println!("Optimized for AMD Alveo U50 and Vivado 2025");
