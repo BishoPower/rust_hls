@@ -1,1 +1,41 @@
-/target
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Vivado generated files
+*.jou
+*.log
+*.str
+*.xpr
+vivado*
+.Xil/
+
+# Simulation artifacts
+*.vcd
+*.ghw
+*.fst
+*.wlf
+work/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
