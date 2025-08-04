@@ -45,10 +45,21 @@ pub enum Operation {
     Not(ValueId),
     CmpLt(ValueId, ValueId),
     CmpEq(ValueId, ValueId),
+    CmpGt(ValueId, ValueId),        // Greater than comparison
+    CmpGe(ValueId, ValueId),        // Greater than or equal
+    CmpLe(ValueId, ValueId),        // Less than or equal  
+    CmpNe(ValueId, ValueId),        // Not equal
     Load(String),             
     Store(String, ValueId),   
     Const(i64),
-    Mux(ValueId, ValueId, ValueId), 
+    Mux(ValueId, ValueId, ValueId), // Conditional select (condition, true_val, false_val)
+    Abs(ValueId),                   // Absolute value
+    Min(ValueId, ValueId),          // Minimum of two values
+    Max(ValueId, ValueId),          // Maximum of two values
+    Shl(ValueId, ValueId),          // Left shift
+    Shr(ValueId, ValueId),          // Right shift  
+    Xor(ValueId, ValueId),          // Bitwise XOR
+    
     // Pipeline-specific operations
     PipelineRegister(ValueId),     // Insert pipeline register
     PipelineBarrier,               // Pipeline synchronization point
@@ -156,12 +167,16 @@ impl Graph {
             Operation::Add(_, _) | Operation::Sub(_, _) => 1,
             Operation::Mul(_, _) => 3, // DSP48 multiplier latency
             Operation::Div(_, _) => 18, // Division latency
-            Operation::And(_, _) | Operation::Or(_, _) | Operation::Not(_) => 1,
-            Operation::CmpLt(_, _) | Operation::CmpEq(_, _) => 1,
+            Operation::And(_, _) | Operation::Or(_, _) | Operation::Not(_) | Operation::Xor(_, _) => 1,
+            Operation::CmpLt(_, _) | Operation::CmpEq(_, _) | Operation::CmpGt(_, _) | 
+            Operation::CmpGe(_, _) | Operation::CmpLe(_, _) | Operation::CmpNe(_, _) => 1,
             Operation::Load(_) => 2, // Memory access latency
             Operation::Store(_, _) => 1,
             Operation::Const(_) => 0,
             Operation::Mux(_, _, _) => 1,
+            Operation::Abs(_) => 1,  // Conditional negate + add
+            Operation::Min(_, _) | Operation::Max(_, _) => 1, // Compare + mux
+            Operation::Shl(_, _) | Operation::Shr(_, _) => 1, // Shift operations
             Operation::PipelineRegister(_) => 1,
             Operation::PipelineBarrier => 0,
             Operation::Nop => 0,

@@ -47,6 +47,7 @@ fn generate_clean_pipelined_module(graph: &Graph, module_name: &str) -> String {
 fn analyze_computation_pattern(graph: &Graph) -> ComputationAnalysis {
     let mut mul_count = 0;
     let mut add_count = 0;
+    let mut complex_ops = 0;
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
     
@@ -56,23 +57,30 @@ fn analyze_computation_pattern(graph: &Graph) -> ComputationAnalysis {
             Operation::Add(_, _) => add_count += 1,
             Operation::Load(name) => inputs.push(name.clone()),
             Operation::Store(name, _) => outputs.push(name.clone()),
+            // Count complex operations that require custom logic
+            Operation::CmpLt(_, _) | Operation::CmpGt(_, _) | Operation::CmpEq(_, _) | 
+            Operation::CmpGe(_, _) | Operation::CmpLe(_, _) | Operation::CmpNe(_, _) |
+            Operation::And(_, _) | Operation::Or(_, _) | Operation::Not(_) |
+            Operation::Mux(_, _, _) | Operation::Abs(_) | Operation::Min(_, _) | 
+            Operation::Max(_, _) | Operation::Shl(_, _) | Operation::Shr(_, _) | 
+            Operation::Xor(_, _) => complex_ops += 1,
             _ => {}
         }
     }
     
-    // Determine pattern
-    let pattern = if mul_count >= 2 && add_count >= 2 {
-        ComputationPattern::MAC
-    } else if mul_count <= 1 && add_count <= 2 {
-        ComputationPattern::SimpleArithmetic
-    } else {
+    // Determine pattern - if we have complex operations, use Complex pattern
+    let pattern = if complex_ops > 0 {
         ComputationPattern::Complex
+    } else if mul_count >= 2 && add_count >= 2 {
+        ComputationPattern::MAC
+    } else {
+        ComputationPattern::SimpleArithmetic
     };
     
     let (logical_stages, description) = match pattern {
         ComputationPattern::MAC => (5, "MAC"),
         ComputationPattern::SimpleArithmetic => (3, "arithmetic"),
-        ComputationPattern::Complex => (4, "complex"),
+        ComputationPattern::Complex => (3, "complex logic"),
     };
     
     ComputationAnalysis {
@@ -264,9 +272,29 @@ fn generate_arithmetic_pipeline(verilog: &mut String, analysis: &ComputationAnal
 }
 
 /// Fallback to generic pipeline for complex patterns
-fn generate_generic_pipeline(verilog: &mut String, _graph: &Graph) {
-    verilog.push_str("    // Generic complex pipeline\n");
-    // Use the existing complex logic as fallback
+fn generate_generic_pipeline(verilog: &mut String, graph: &Graph) {
+    verilog.push_str("    // Complex computation pipeline\n");
+    
+    // Generate the actual combinational logic
+    generate_combinational_logic(verilog, graph);
+    
+    // Add simple pipeline control
+    verilog.push_str("    // Pipeline control\n");
+    verilog.push_str("    always @(posedge ap_clk) begin\n");
+    verilog.push_str("        if (!ap_rst_n) begin\n");
+    verilog.push_str("            pipeline_valid <= 3'b000;\n");
+    verilog.push_str("            pipeline_counter <= 3'b000;\n");
+    verilog.push_str("            ap_done <= 1'b0;\n");
+    verilog.push_str("        end else if (ap_start) begin\n");
+    verilog.push_str("            pipeline_valid <= {pipeline_valid[1:0], 1'b1};\n");
+    verilog.push_str("            pipeline_counter <= pipeline_counter + 1;\n");
+    verilog.push_str("            ap_done <= pipeline_valid[2];\n");
+    verilog.push_str("        end\n");
+    verilog.push_str("    end\n");
+    verilog.push_str("\n");
+    verilog.push_str("    // Control signal assignments\n");
+    verilog.push_str("    assign ap_idle = ~pipeline_valid[0];\n");
+    verilog.push_str("    assign ap_ready = ~pipeline_valid[0];\n");
 }
 
 /// Generate a simple (non-pipelined) Verilog module  
@@ -285,6 +313,9 @@ fn generate_simple_module(graph: &Graph, module_name: &str) -> String {
     verilog.push_str("    (* DONT_TOUCH = \"yes\" *) reg [1:0] state;\n");
     verilog.push_str("    localparam IDLE = 2'b00, COMPUTE = 2'b01, DONE = 2'b10;\n");
     verilog.push_str("    \n");
+    
+    // Generate combinational logic for all operations
+    generate_combinational_logic(&mut verilog, graph);
     
     // Add simple implementation logic...
     verilog.push_str("    assign ap_idle = (state == IDLE);\n");
@@ -350,12 +381,267 @@ fn generate_module_header(graph: &Graph, module_name: &str) -> String {
         verilog.push_str("    \n    // Data outputs\n");
         for (i, output) in outputs.iter().enumerate() {
             let comma = if i == outputs.len() - 1 { "" } else { "," };
-            verilog.push_str(&format!("    output reg  [DATA_WIDTH-1:0]  {}{}\n", output, comma));
+            verilog.push_str(&format!("    output wire [DATA_WIDTH-1:0]  {}{}\n", output, comma));
         }
     }
     
     verilog.push_str(");\n\n");
     verilog
+}
+
+/// Generate combinational logic for all operations in the graph
+fn generate_combinational_logic(verilog: &mut String, graph: &Graph) {
+    // Generate wire declarations for intermediate values
+    verilog.push_str("    // Intermediate computation wires\n");
+    for (node_id, node) in graph.nodes.iter().enumerate() {
+        match &node.op {
+            Operation::Load(_) | Operation::Store(_, _) | Operation::Const(_) => {
+                // Inputs, outputs, and constants don't need wire declarations
+            }
+            _ => {
+                verilog.push_str(&format!("    wire [DATA_WIDTH-1:0] node_{};\n", node_id));
+            }
+        }
+    }
+    verilog.push_str("\n");
+    
+    // Generate assign statements for each operation
+    verilog.push_str("    // Combinational logic for all operations\n");
+    for (node_id, node) in graph.nodes.iter().enumerate() {
+        generate_operation_verilog(verilog, node_id, &node.op, graph);
+    }
+    verilog.push_str("\n");
+}
+
+/// Generate Verilog for a specific operation
+fn generate_operation_verilog(verilog: &mut String, node_id: usize, op: &Operation, graph: &Graph) {
+    match op {
+        // Arithmetic operations
+        Operation::Add(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = {} + {};  // Addition\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::Sub(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = {} - {};  // Subtraction\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::Mul(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = {} * {};  // Multiplication\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::Div(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = {} / {};  // Division\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        // Comparison operations
+        Operation::CmpLt(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} < {}) ? 32'd1 : 32'd0;  // Less than\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::CmpGt(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} > {}) ? 32'd1 : 32'd0;  // Greater than\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::CmpEq(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} == {}) ? 32'd1 : 32'd0;  // Equality\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::CmpGe(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} >= {}) ? 32'd1 : 32'd0;  // Greater than or equal\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::CmpLe(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} <= {}) ? 32'd1 : 32'd0;  // Less than or equal\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::CmpNe(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} != {}) ? 32'd1 : 32'd0;  // Not equal\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        // Logical operations
+        Operation::And(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} != 0) && ({} != 0) ? 32'd1 : 32'd0;  // Logical AND\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::Or(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} != 0) || ({} != 0) ? 32'd1 : 32'd0;  // Logical OR\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::Not(a_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} == 0) ? 32'd1 : 32'd0;  // Logical NOT\n",
+                node_id, a_val
+            ));
+        }
+        
+        Operation::Xor(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = {} ^ {};  // Bitwise XOR\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        // Conditional and utility operations  
+        Operation::Mux(cond_id, true_id, false_id) => {
+            let cond_val = get_value_reference(*cond_id, graph);
+            let true_val = get_value_reference(*true_id, graph);
+            let false_val = get_value_reference(*false_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} != 0) ? {} : {};  // Multiplexer\n",
+                node_id, cond_val, true_val, false_val
+            ));
+        }
+        
+        Operation::Abs(a_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({}[31]) ? (~{} + 1) : {};  // Absolute value\n",
+                node_id, a_val, a_val, a_val
+            ));
+        }
+        
+        Operation::Min(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} < {}) ? {} : {};  // Minimum\n",
+                node_id, a_val, b_val, a_val, b_val
+            ));
+        }
+        
+        Operation::Max(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = ({} > {}) ? {} : {};  // Maximum\n",
+                node_id, a_val, b_val, a_val, b_val
+            ));
+        }
+        
+        // Shift operations
+        Operation::Shl(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = {} << {};  // Left shift\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        Operation::Shr(a_id, b_id) => {
+            let a_val = get_value_reference(*a_id, graph);
+            let b_val = get_value_reference(*b_id, graph);
+            verilog.push_str(&format!(
+                "    assign node_{} = {} >> {};  // Right shift\n",
+                node_id, a_val, b_val
+            ));
+        }
+        
+        // Output assignment
+        Operation::Store(name, value_id) => {
+            let val = get_value_reference(*value_id, graph);
+            verilog.push_str(&format!(
+                "    assign {} = {};  // Output assignment\n",
+                name, val
+            ));
+        }
+        
+        // Input and constants don't generate logic
+        Operation::Load(_) | Operation::Const(_) => {}
+        
+        // Pipeline operations don't generate logic in combinational version
+        Operation::PipelineRegister(_) | Operation::PipelineBarrier | Operation::Nop => {}
+    }
+}
+
+/// Get the Verilog reference for a value (input, constant, or intermediate result)
+fn get_value_reference(value_id: crate::ir::graph::ValueId, graph: &Graph) -> String {
+    // Find the node that produces this value
+    for (node_id, node) in graph.nodes.iter().enumerate() {
+        match &node.op {
+            Operation::Load(name) => {
+                if node.output == Some(value_id) {
+                    return name.clone();
+                }
+            }
+            Operation::Const(val) => {
+                if node.output == Some(value_id) {
+                    return format!("32'd{}", val);
+                }
+            }
+            _ => {
+                if node.output == Some(value_id) {
+                    return format!("node_{}", node_id);
+                }
+            }
+        }
+    }
+    
+    // Fallback
+    format!("32'd0")
 }
 
 // Supporting data structures

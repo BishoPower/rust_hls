@@ -1,213 +1,78 @@
-# Rust HLS - High-Level Synthesis Compiler
+# Rust HLS FPGA Trading System
 
-A modern High-Level Synthesis (HLS) compiler written in Rust that generates optimized Verilog code for FPGA development. Specifically designed and optimized for AMD Alveo U50 FPGAs and Vivado 2025.
+A high-level synthesis framework for FPGA development focused on high-frequency trading applications.
 
-## Features
+## Overview
 
-- **Pipeline Generation**: Automatic pipeline scheduling with configurable initiation interval (II) and depth
-- **DSP Optimization**: Targets AMD Alveo U50's DSP48E2 blocks for efficient arithmetic operations
-- **Clean Verilog Output**: Generates synthesis-ready Verilog with proper timing constraints
-- **Multiple Backends**: Support for Verilator simulation and Vivado synthesis
-- **Type-Safe IR**: Strongly typed intermediate representation for reliable transformations
+This project provides a complete pipeline from Rust code to FPGA implementation, specifically optimized for low-latency trading applications. The system generates Verilog HDL from Rust descriptions and integrates with Vivado for simulation and synthesis.
+
+## Core Components
+
+### Essential Files
+
+- **`src/`** - Core Rust HLS library and trading modules
+- **`tb_hft_continuous_bridge.sv`** - SystemVerilog testbench for FPGA simulation
+- **`generate_market_data.py`** - Market data file generator (static files)
+- **`vivado_hft_continuous.tcl`** - Vivado batch simulation script
+- **`vivado_gui_setup.tcl`** - Vivado GUI setup script
+- **`fpga_bridge/`** - Communication bridge between Python and FPGA
+
+### Python Integration
+
+- **`generate_market_data.py`** - Market data file generator (uses only standard libraries)
+- **`python/requirements.txt`** - Dependencies (none required)
+- **`fpga_bridge/`** - Single communication bridge directory
+
+### Generated Output
+
+- **`target/verilog_out/`** - Generated Verilog modules
+- **`target/pipeline_out/`** - Pipeline optimization outputs
 
 ## Quick Start
 
-### Prerequisites
+1. **Setup Environment**
 
-- Rust 1.70+ (install from [rustup.rs](https://rustup.rs/))
-- Optional: Vivado 2025.x for synthesis and simulation
-- Optional: Verilator for fast simulation
+   ```bash
+   cargo build
+   # No Python dependencies needed!
+   ```
 
-### Installation
+2. **Run FPGA Simulation (Batch Mode)**
 
-```bash
-git clone https://github.com/yourusername/rust_hls.git
-cd rust_hls
-cargo build --release
-```
+   ```bash
+   python generate_market_data.py
+   vivado -mode batch -source vivado_hft_continuous.tcl
+   ```
 
-### Basic Usage
+3. **Run FPGA Simulation (GUI Mode)**
+   ```bash
+   vivado -mode gui -source vivado_gui_setup.tcl
+   ```
 
-Run the main compiler to see available options:
+## System Architecture
 
-```bash
-cargo run
-```
+The system operates as a simple, efficient trading pipeline:
 
-Generate a pipelined MAC (Multiply-Accumulate) example:
+1. **Market Data Generation** - `generate_market_data.py` creates static market data files
+2. **File Communication** - JSON files bridge Python and Vivado simulation
+3. **FPGA Processing** - HFT module processes market data in hardware
+4. **Trading Decisions** - System outputs buy/sell decisions with microsecond latency
 
-```bash
-cargo run --example pipelined_mac
-```
+## Trading Scenarios
 
-This creates optimized Verilog in `target/verilog_out/pipelined_mac.v`.
+The system includes multiple market scenarios:
 
-## Example: Pipelined MAC
+- **SPY** - S&P 500 ETF with tight spreads ($500.00/$500.01)
+- **QQQ** - NASDAQ ETF with moderate volatility ($349.50/$349.55)
+- **IWM** - Russell 2000 ETF with wider spreads ($199.98/$200.01)
 
-The included MAC example demonstrates a 5-stage pipeline implementing:
+## Requirements
 
-```
-result = (a * b) + (c * d) + e
-```
-
-### Generated Pipeline Structure
-
-```
-Stage 1-2: Parallel multiplications (a*b) and (c*d)
-Stage 3:   Addition of multiplication results
-Stage 4:   Final accumulation with input e
-Stage 5:   Output registration
-```
-
-### Key Features
-
-- **Initiation Interval**: II=1 (new input every cycle)
-- **Latency**: 5 cycles for full pipeline
-- **Throughput**: One result per clock cycle after initial latency
-- **Resource Usage**: 2 DSP48E2 blocks, minimal logic resources
-
-## Project Structure
-
-```
-src/
-├── lib.rs              # Library entry point
-├── main.rs             # CLI interface
-├── dsl/                # Domain-Specific Language
-│   ├── ast.rs          # Abstract syntax tree
-│   └── hls.rs          # HLS-specific constructs
-├── ir/                 # Intermediate Representation
-│   ├── graph.rs        # Computation graph and operations
-│   └── lower.rs        # IR lowering passes
-├── passes/             # Optimization passes
-│   └── pipeline.rs     # Pipeline scheduling algorithm
-└── backend/            # Code generation
-    ├── verilog.rs      # Verilog generation
-    ├── testbench.rs    # Testbench generation
-    └── verilator.rs    # Verilator integration
-
-examples/
-└── pipelined_mac.rs    # Complete MAC pipeline example
-
-target/
-├── verilog_out/        # Generated Verilog files
-└── sim/               # Simulation artifacts
-```
-
-## Creating Custom Pipelines
-
-### 1. Basic Graph Creation
-
-```rust
-use rust_hls::ir::graph::Graph;
-use rust_hls::passes::pipeline::PipelineScheduler;
-use rust_hls::backend::verilog::generate_verilog_module;
-
-let mut graph = Graph::new();
-
-// Create inputs
-let a = graph.add_node_with_output(Operation::Load("a".to_string()));
-let b = graph.add_node_with_output(Operation::Load("b".to_string()));
-
-// Add operations
-let result = graph.add_node_with_output(Operation::Add(a, b));
-
-// Create output
-graph.add_node(Operation::Store("result".to_string(), result));
-```
-
-### 2. Enable Pipelining
-
-```rust
-// Configure pipeline: II=1, depth=3, no unrolling
-graph.enable_pipeline(1, 3, 1);
-
-// Schedule the pipeline
-let mut scheduler = PipelineScheduler::new();
-scheduler.schedule_pipeline(&mut graph)?;
-```
-
-### 3. Generate Verilog
-
-```rust
-let verilog = generate_verilog_module(&graph, "my_module");
-std::fs::write("output.v", verilog)?;
-```
-
-## Supported Operations
-
-| Operation   | Verilog  | Latency   | Notes                         |
-| ----------- | -------- | --------- | ----------------------------- |
-| `Add(a, b)` | `a + b`  | 1 cycle   | Uses fast carry chains        |
-| `Sub(a, b)` | `a - b`  | 1 cycle   | Uses fast carry chains        |
-| `Mul(a, b)` | `a * b`  | 3 cycles  | Maps to DSP48E2 blocks        |
-| `Div(a, b)` | `a / b`  | 18 cycles | Implements restoring division |
-| `And(a, b)` | `a & b`  | 1 cycle   | Bitwise AND                   |
-| `Or(a, b)`  | `a \| b` | 1 cycle   | Bitwise OR                    |
-| `Not(a)`    | `~a`     | 1 cycle   | Bitwise NOT                   |
-
-## Simulation and Verification
-
-### Using Vivado
-
-1. Open Vivado and create a new project
-2. Add the generated `.v` file as a source
-3. Create a testbench module
-4. Run behavioral simulation
-5. Synthesize for Alveo U50 target
-
-### Using Verilator (if available)
-
-The compiler includes Verilator integration for fast simulation:
-
-```bash
-# Automatic testbench generation and simulation
-# (Work in progress - currently manual testbench required)
-```
-
-## Performance Characteristics
-
-### Resource Usage (Typical MAC Pipeline)
-
-- **DSP48E2 Blocks**: 2 (for multiplications)
-- **Block RAM**: 0 (register-based design)
-- **LUTs**: ~50 (control logic and small additions)
-- **Flip-Flops**: ~200 (pipeline registers)
-
-### Timing (Alveo U50 @ 250 MHz)
-
-- **Clock Period**: 4.0 ns
-- **Pipeline Latency**: 5 clock cycles (20 ns)
-- **Throughput**: 250 M operations/second
-- **Power**: Estimated 2-3W for MAC pipeline
-
-## Development Status
-
-This project is actively developed and currently supports:
-
-- ✅ Basic arithmetic operations
-- ✅ Pipeline scheduling and optimization
-- ✅ Verilog code generation for Alveo U50
-- ✅ DSP48E2 inference and optimization
-- ⚠️ Verilator integration (basic support)
-- 🚧 Advanced control flow (loops, conditionals)
-- 🚧 Memory interface generation
-- 🚧 Multi-clock domain support
-
-## Contributing
-
-Contributions are welcome! Areas of particular interest:
-
-1. **Memory Controllers**: AXI4 and AXI4-Stream interfaces
-2. **Control Flow**: While loops, if/else statements
-3. **Optimization**: Dead code elimination, constant propagation
-4. **Testing**: More comprehensive verification suites
+- **Rust** 1.70+ with Cargo
+- **Python** 3.x (standard libraries only)
+- **Vivado** 2022.2+ for FPGA simulation and synthesis
+- **Windows** PowerShell environment
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Inspired by modern HLS tools like Vitis HLS and Intel HLS Compiler
-- Built for the AMD Alveo U50 acceleration platform
-- Designed for integration with Vivado 2025.x toolchain
+See LICENSE file for details.

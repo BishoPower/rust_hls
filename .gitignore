@@ -1,7 +1,22 @@
 # Rust build artifacts
-/target/
+/target/debug/
 **/*.rs.bk
-Cargo.lock
+
+# Keep essential build outputs
+!/target/verilog_out/
+!/target/pipeline_out/
+
+# Vivado temporary files
+*.jou
+*.log
+*.str
+vivado_*.backup.*
+.Xil/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
 
 # IDE files
 .vscode/
